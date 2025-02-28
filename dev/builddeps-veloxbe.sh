@@ -216,7 +216,8 @@ function build_velox_backend {
 
 (
   cd $GLUTEN_DIR/ep/build-velox/src
-  ./get_velox.sh $VELOX_PARAMETER
+  # not: just run once!!!!
+  # ./get_velox.sh $VELOX_PARAMETER
 )
 
 if [ "$VELOX_HOME" == "" ]; then
