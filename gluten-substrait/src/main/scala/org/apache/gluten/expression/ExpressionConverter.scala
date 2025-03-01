@@ -156,12 +156,27 @@ object ExpressionConverter extends SQLConfHelper with Logging {
             case "decode" =>
               return GenericExpressionTransformer(
                 ExpressionNames.URL_DECODE,
+                // todo: 这里不应该使用使用 map!
                 child.map(replaceWithExpressionTransformer0(_, attributeSeq, expressionsMap)),
                 i)
             case "encode" =>
               return GenericExpressionTransformer(
                 ExpressionNames.URL_ENCODE,
                 child.map(replaceWithExpressionTransformer0(_, attributeSeq, expressionsMap)),
+                i)
+          }
+        } else if (objectName.endsWith("Base64")) {
+          // for spark 3.5+
+          val value = i.arguments.head
+          val chunkBase64 = i.arguments.apply(1)
+          i.functionName match {
+            case "encode" =>
+              return GenericExpressionTransformer(
+                ExpressionNames.BASE64,
+                Seq(
+                  replaceWithExpressionTransformer0(value, attributeSeq, expressionsMap),
+                  LiteralTransformer(chunkBase64)
+                ),
                 i)
           }
         }

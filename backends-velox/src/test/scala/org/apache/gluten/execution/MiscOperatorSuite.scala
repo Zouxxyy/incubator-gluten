@@ -637,6 +637,51 @@ class MiscOperatorSuite extends VeloxWholeStageTransformerSuite with AdaptiveSpa
     }
   }
 
+  test("base64 with chunkBase64String") {
+    withTempView("t") {
+      val longString = "a" * 58
+      Seq[String](longString).toDF("a").createOrReplaceTempView("t")
+
+      Seq("true", "false").foreach(
+        chunkBase64String => {
+          withSQLConf("spark.sql.chunkBase64String.enabled" -> chunkBase64String) {
+            runQueryAndCompare("select base64(a) from t") {
+              checkGlutenOperatorMatch[ProjectExecTransformer]
+            }
+          }
+        }
+      )
+    }
+  }
+
+  test("unbase64") {
+    withTable("t") {
+      sql("create table t (a string, b string) using parquet")
+      sql(
+        s"""
+           |insert into t values
+           |('01', 'YWJ'),
+           |('02', 'YW J'),
+           |('03', 'YWJ?'),
+           |-- ('04', 'abcdA'), -- spark & velox error
+           |('05', 'abcdAE'),
+           |('06', 'abcdAE=='),
+           |-- ('07', 'abcdAE='), -- spark & velox error
+           |-- ('08', 'ab==tm+1'), -- spark & velox error
+           |('09', 'YQ=='),
+           |('10', 'YQ==='),
+           |('11', 'YQ===='),
+           |('12', 'YQ====='),
+           |('13', 'YQ======'),
+           |('14', 'YQ=======')
+           |""".stripMargin)
+
+      runQueryAndCompare("select a, unbase64(b), base64(unbase64(b)) from t") {
+        checkGlutenOperatorMatch[ProjectExecTransformer]
+      }
+    }
+  }
+
   test("decimal abs") {
     runQueryAndCompare("""
                          |select abs(cast (l_quantity * (-1.0) as decimal(12, 2))),
