@@ -91,7 +91,8 @@ abstract class BatchScanExecTransformerBase(
     commonPartitionValues,
     applyPartialClustering,
     replicatePartitions)
-  with BasicScanExecTransformer {
+  with BasicScanExecTransformer
+  with SupportPushDownPostScanFilters {
 
   // Note: "metrics" is made transient to avoid sending driver-side metrics to tasks.
   @transient override lazy val metrics: Map[String, SQLMetric] =
@@ -116,15 +117,16 @@ abstract class BatchScanExecTransformerBase(
             output)
       }
     case _ =>
-      logInfo(s"${scan.getClass.toString} does not support push down filters")
       Seq.empty
   }
 
-  def setPushDownFilters(filters: Seq[Expression]): Unit = {
-    pushdownFilters = filters
-  }
-
   override def filterExprs(): Seq[Expression] = pushdownFilters
+
+  override def pushDownPostScanFilters(
+      postScanFilters: Seq[Expression]): BasicScanExecTransformer = {
+    pushdownFilters = FilterHandler.mergeFilters(pushdownFilters, postScanFilters)
+    this
+  }
 
   override def getMetadataColumns(): Seq[AttributeReference] = Seq.empty
 

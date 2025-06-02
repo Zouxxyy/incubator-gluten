@@ -335,4 +335,8 @@ object FilterHandler extends PredicateHelper {
    */
   def getRemainingFilters(scanFilters: Seq[Expression], filters: Seq[Expression]): Seq[Expression] =
     (filters.toSet -- scanFilters.toSet).toSeq
+
+  def mergeFilters(baseFilters: Seq[Expression], extraFilters: Seq[Expression]): Seq[Expression] = {
+    baseFilters ++ getRemainingFilters(baseFilters, extraFilters)
+  }
 }

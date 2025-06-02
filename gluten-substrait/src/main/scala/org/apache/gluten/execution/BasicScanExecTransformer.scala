@@ -162,3 +162,9 @@ trait BasicScanExecTransformer extends LeafTransformSupport with BaseDataSource 
     TransformContext(output, readNode)
   }
 }
+
+trait SupportPushDownPostScanFilters extends BasicScanExecTransformer {
+
+  /** Push down post scan filters to native scan */
+  def pushDownPostScanFilters(postScanFilters: Seq[Expression]): BasicScanExecTransformer
+}

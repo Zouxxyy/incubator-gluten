@@ -56,7 +56,8 @@ case class FileSourceScanExecTransformer(
     optionalNumCoalescedBuckets,
     dataFilters,
     tableIdentifier,
-    disableBucketedScan) {
+    disableBucketedScan)
+  with SupportPushDownPostScanFilters {
 
   override def doCanonicalize(): FileSourceScanExecTransformer = {
     FileSourceScanExecTransformer(
@@ -72,6 +73,11 @@ case class FileSourceScanExecTransformer(
       None,
       disableBucketedScan
     )
+  }
+
+  override def pushDownPostScanFilters(
+      postScanFilters: Seq[Expression]): BasicScanExecTransformer = {
+    this.copy(dataFilters = FilterHandler.mergeFilters(dataFilters, postScanFilters))
   }
 }
 
