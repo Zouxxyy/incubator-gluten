@@ -18,3 +18,7 @@ add_test_case(object_store_test SOURCES ObjectStoreTest.cc)
 add_test_case(memory_allocator_test SOURCES MemoryAllocatorTest.cc)
 add_test_case(ffor_codec_test SOURCES FForCodecTest.cc)
 add_test_case(print_config_test SOURCES PrintConfigTest.cc)
+add_test_case(
+  jni_thread_attachment_test SOURCES
+  ${GLUTEN_HOME}/gluten-ut/native/JniThreadAttachmentTest.cc EXTRA_LINK_LIBS
+  ${JAVA_JVM_LIBRARY})

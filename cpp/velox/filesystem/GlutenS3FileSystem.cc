@@ -49,9 +49,9 @@
 #include <folly/Conv.h>
 #include <folly/ScopeGuard.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
-#include <folly/executors/thread_factory/NamedThreadFactory.h>
 #include <folly/synchronization/ThrottledLifoSem.h>
 #include <glog/logging.h>
+#include "jni/JniThreadFactory.h"
 
 #include "velox/common/base/StatsReporter.h"
 #include "velox/common/config/Config.h"
@@ -275,7 +275,7 @@ std::shared_ptr<Aws::S3::S3Client> createWriteClient(const std::shared_ptr<files
 
 std::shared_ptr<folly::CPUThreadPoolExecutor> createUploadThreadPool(uint32_t uploadThreads) {
   return std::make_shared<folly::CPUThreadPoolExecutor>(
-      uploadThreads, std::make_shared<folly::NamedThreadFactory>("s3-upload-thread"));
+      uploadThreads, std::make_shared<JniThreadFactory>("s3-upload-thread"));
 }
 
 class GlutenS3WriteFile : public velox::WriteFile {
