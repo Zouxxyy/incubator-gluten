@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include "JniTest.h"
 #include "jni/JniThreadAttachment.h"
 
 #include <fcntl.h>
@@ -23,7 +24,6 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <cstdlib>
-#include <string>
 #include <thread>
 
 #if !defined(__linux__) || !defined(__GLIBC__)
@@ -35,24 +35,12 @@ TEST(JniHdfsThreadCleanupTest, requiresGlibcThreadExitOrdering) {
 namespace gluten {
 namespace {
 
-TEST(JniHdfsThreadCleanup, localFilesCloseBeforeOwnedAttachmentIsReleased) {
-  const char* classPath = std::getenv("CLASSPATH");
-  ASSERT_NE(classPath, nullptr) << "Set CLASSPATH to the Hadoop client jars";
-  std::string classPathOption = std::string("-Djava.class.path=") + classPath;
-  JavaVMOption option{};
-  option.optionString = classPathOption.data();
-  JavaVMInitArgs args{};
-  args.version = JNI_VERSION_1_8;
-  args.nOptions = 1;
-  args.options = &option;
-  JavaVM* vm = nullptr;
-  JNIEnv* env = nullptr;
-  ASSERT_EQ(JNI_CreateJavaVM(&vm, reinterpret_cast<void**>(&env), &args), JNI_OK);
-  auto localClass = env->FindClass("java/lang/Thread");
-  auto threadClass = static_cast<jclass>(env->NewGlobalRef(localClass));
-  env->DeleteLocalRef(localClass);
-  auto currentThread = env->GetStaticMethodID(threadClass, "currentThread", "()Ljava/lang/Thread;");
-  auto isAlive = env->GetMethodID(threadClass, "isAlive", "()Z");
+using JniHdfsThreadCleanup = JniTest;
+
+TEST_F(JniHdfsThreadCleanup, localFilesCloseBeforeOwnedAttachmentIsReleased) {
+  if (std::getenv("CLASSPATH") == nullptr) {
+    GTEST_SKIP() << "Set CLASSPATH to the Hadoop client jars (hadoop classpath --glob)";
+  }
 
   char path[] = "/tmp/gluten-jni-hdfs-XXXXXX";
   const int fd = mkstemp(path);
@@ -78,12 +66,13 @@ TEST(JniHdfsThreadCleanup, localFilesCloseBeforeOwnedAttachmentIsReleased) {
       0);
 
   for (bool glutenAttachesFirst : {true, false}) {
+    SCOPED_TRACE(glutenAttachesFirst);
     FileCleanup cleanup;
     jobject thread = nullptr;
     auto worker = std::thread(withJniThreadLifecycle([&] {
       JNIEnv* workerEnv = nullptr;
       if (glutenAttachesFirst) {
-        ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm, &workerEnv), JNI_OK);
+        ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &workerEnv), JNI_OK);
       }
       // Uses the real libhdfs JNI/TLS implementation, but only a local file://
       // filesystem: no NameNode, credentials or network service is required.
@@ -92,26 +81,17 @@ TEST(JniHdfsThreadCleanup, localFilesCloseBeforeOwnedAttachmentIsReleased) {
       cleanup.file = hdfsOpenFile(cleanup.fs, path, O_RDONLY, 0, 0, 0);
       ASSERT_NE(cleanup.file, nullptr);
       if (!glutenAttachesFirst) {
-        ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm, &workerEnv), JNI_OK);
+        ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &workerEnv), JNI_OK);
       }
-      auto local = workerEnv->CallStaticObjectMethod(threadClass, currentThread);
-      thread = workerEnv->NewGlobalRef(local);
-      workerEnv->DeleteLocalRef(local);
+      thread = captureThread(workerEnv);
       ASSERT_EQ(pthread_setspecific(fileKey, &cleanup), 0);
     }));
     worker.join();
     EXPECT_TRUE(cleanup.ran);
-    if (thread != nullptr) {
-      EXPECT_FALSE(env->CallBooleanMethod(thread, isAlive));
-      env->DeleteGlobalRef(thread);
-    } else {
-      ADD_FAILURE() << "Worker did not reach the JNI callback";
-    }
+    checkExited(thread);
   }
   EXPECT_EQ(pthread_key_delete(fileKey), 0);
   EXPECT_EQ(unlink(path), 0);
-  env->DeleteGlobalRef(threadClass);
-  EXPECT_EQ(vm->DestroyJavaVM(), JNI_OK);
 }
 
 } // namespace

@@ -16,6 +16,7 @@
  */
 
 #include "jni/JniThreadFactory.h"
+#include "JniTest.h"
 
 #include <folly/ThreadLocal.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
@@ -34,37 +35,8 @@ TEST(JniThreadFactoryTest, requiresGlibcThreadExitOrdering) {
 namespace gluten {
 namespace {
 
-class JniThreadFactoryTest : public testing::Test {
+class JniThreadFactoryTest : public JniTest {
  protected:
-  static void SetUpTestSuite() {
-    JavaVMInitArgs args{};
-    args.version = JNI_VERSION_1_8;
-    ASSERT_EQ(JNI_CreateJavaVM(&vm_, reinterpret_cast<void**>(&env_), &args), JNI_OK);
-    auto local = env_->FindClass("java/lang/Thread");
-    threadClass_ = static_cast<jclass>(env_->NewGlobalRef(local));
-    env_->DeleteLocalRef(local);
-    currentThread_ = env_->GetStaticMethodID(threadClass_, "currentThread", "()Ljava/lang/Thread;");
-    isAlive_ = env_->GetMethodID(threadClass_, "isAlive", "()Z");
-  }
-
-  static void TearDownTestSuite() {
-    env_->DeleteGlobalRef(threadClass_);
-    EXPECT_EQ(vm_->DestroyJavaVM(), JNI_OK);
-  }
-
-  static jobject captureThread(JNIEnv* env) {
-    auto local = env->CallStaticObjectMethod(threadClass_, currentThread_);
-    auto global = env->NewGlobalRef(local);
-    env->DeleteLocalRef(local);
-    return global;
-  }
-
-  static void checkExited(jobject thread) {
-    ASSERT_NE(thread, nullptr);
-    EXPECT_FALSE(env_->CallBooleanMethod(thread, isAlive_));
-    env_->DeleteGlobalRef(thread);
-  }
-
   struct OnExit {
     std::function<void()> action;
     ~OnExit() {
@@ -73,19 +45,7 @@ class JniThreadFactoryTest : public testing::Test {
       }
     }
   };
-
-  static JavaVM* vm_;
-  static JNIEnv* env_;
-  static jclass threadClass_;
-  static jmethodID currentThread_;
-  static jmethodID isAlive_;
 };
-
-JavaVM* JniThreadFactoryTest::vm_ = nullptr;
-JNIEnv* JniThreadFactoryTest::env_ = nullptr;
-jclass JniThreadFactoryTest::threadClass_ = nullptr;
-jmethodID JniThreadFactoryTest::currentThread_ = nullptr;
-jmethodID JniThreadFactoryTest::isAlive_ = nullptr;
 
 TEST_F(JniThreadFactoryTest, poolWorkersDetachAfterFollyThreadLocalCleanup) {
   folly::ThreadLocal<OnExit> cleanup;

@@ -16,6 +16,7 @@
  */
 
 #include "jni/JniThreadAttachment.h"
+#include "JniTest.h"
 
 #include <gtest/gtest.h>
 #include <limits.h>
@@ -88,21 +89,6 @@ class FakeJvm {
 
 thread_local bool FakeJvm::attached = false;
 
-TEST(JniThreadAttachment, detachOnceWhenWorkerExits) {
-  FakeJvm jvm;
-  auto worker = startWorker([&] {
-    for (int i = 0; i < 10; ++i) {
-      JNIEnv* env = nullptr;
-      ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
-      EXPECT_EQ(env, &jvm.env);
-      EXPECT_EQ(jvm.detachCalls, 0);
-    }
-  });
-  worker.join();
-  EXPECT_EQ(jvm.attachCalls, 1);
-  EXPECT_EQ(jvm.detachCalls, 1);
-}
-
 TEST(JniThreadAttachment, preserveExistingAttachment) {
   FakeJvm jvm;
   auto worker = startWorker([&] {
@@ -142,53 +128,22 @@ TEST(JniThreadAttachment, propagateGetEnvError) {
   EXPECT_EQ(jvm.detachCalls, 0);
 }
 
-TEST(JniThreadAttachment, explicitDetachIsNotRepeated) {
-  FakeJvm jvm;
-  auto worker = startWorker([&] {
-    JNIEnv* env = nullptr;
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
-    ASSERT_EQ(jvm.vm.DetachCurrentThread(), JNI_OK);
-  });
-  worker.join();
-  EXPECT_EQ(jvm.attachCalls, 1);
-  EXPECT_EQ(jvm.detachCalls, 1);
-}
-
-TEST(JniThreadAttachment, reattachedWorkerIsCleanedUp) {
-  FakeJvm jvm;
-  auto worker = startWorker([&] {
-    JNIEnv* env = nullptr;
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
-    ASSERT_EQ(jvm.vm.DetachCurrentThread(), JNI_OK);
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
-  });
-  worker.join();
-  EXPECT_EQ(jvm.attachCalls, 2);
-  EXPECT_EQ(jvm.detachCalls, 2);
-}
-
-TEST(JniThreadAttachment, independentWorkerLifetimes) {
-  FakeJvm jvm;
-  std::vector<std::thread> workers;
-  for (int i = 0; i < 32; ++i) {
-    workers.push_back(startWorker([&] {
+TEST(JniThreadAttachment, explicitDetachAndReattach) {
+  for (bool reattach : {false, true}) {
+    SCOPED_TRACE(reattach);
+    FakeJvm jvm;
+    auto worker = startWorker([&] {
       JNIEnv* env = nullptr;
-      EXPECT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
-    }));
-  }
-  for (auto& worker : workers) {
+      ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
+      ASSERT_EQ(jvm.vm.DetachCurrentThread(), JNI_OK);
+      if (reattach) {
+        ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
+      }
+    });
     worker.join();
+    EXPECT_EQ(jvm.attachCalls, reattach ? 2 : 1);
+    EXPECT_EQ(jvm.detachCalls, jvm.attachCalls.load());
   }
-  EXPECT_EQ(jvm.attachCalls, 32);
-  EXPECT_EQ(jvm.detachCalls, 32);
-}
-
-TEST(JniThreadAttachment, registrationDoesNotAttachUnusedWorkers) {
-  FakeJvm jvm;
-  auto worker = startWorker([] { initializeNativeThreadJni(); });
-  worker.join();
-  EXPECT_EQ(jvm.attachCalls, 0);
-  EXPECT_EQ(jvm.detachCalls, 0);
 }
 
 TEST(JniThreadAttachment, unmanagedThreadsKeepTheirExistingLifecycle) {
@@ -202,42 +157,8 @@ TEST(JniThreadAttachment, unmanagedThreadsKeepTheirExistingLifecycle) {
   EXPECT_EQ(jvm.detachCalls, 0);
 }
 
-class JniThreadAttachmentJvmTest : public testing::Test {
+class JniThreadAttachmentJvmTest : public JniTest {
  protected:
-  static void SetUpTestSuite() {
-    JavaVMInitArgs args{};
-    args.version = JNI_VERSION_1_8;
-    ASSERT_EQ(JNI_CreateJavaVM(&vm_, reinterpret_cast<void**>(&env_), &args), JNI_OK);
-    auto localThreadClass = env_->FindClass("java/lang/Thread");
-    threadClass_ = static_cast<jclass>(env_->NewGlobalRef(localThreadClass));
-    env_->DeleteLocalRef(localThreadClass);
-    ASSERT_NE(threadClass_, nullptr);
-    currentThread_ = env_->GetStaticMethodID(threadClass_, "currentThread", "()Ljava/lang/Thread;");
-    isAlive_ = env_->GetMethodID(threadClass_, "isAlive", "()Z");
-    ASSERT_NE(currentThread_, nullptr);
-    ASSERT_NE(isAlive_, nullptr);
-  }
-
-  static void TearDownTestSuite() {
-    if (vm_ != nullptr) {
-      env_->DeleteGlobalRef(threadClass_);
-      EXPECT_EQ(vm_->DestroyJavaVM(), JNI_OK);
-    }
-  }
-
-  static jobject captureThread(JNIEnv* env) {
-    auto localThread = env->CallStaticObjectMethod(threadClass_, currentThread_);
-    auto thread = env->NewGlobalRef(localThread);
-    env->DeleteLocalRef(localThread);
-    return thread;
-  }
-
-  static void checkExited(jobject thread) {
-    ASSERT_NE(thread, nullptr);
-    EXPECT_FALSE(env_->CallBooleanMethod(thread, isAlive_));
-    env_->DeleteGlobalRef(thread);
-  }
-
   struct Cleanup {
     JavaVM* vm;
     JNIEnv* cachedEnv = nullptr;
@@ -259,56 +180,38 @@ class JniThreadAttachmentJvmTest : public testing::Test {
       }
     }
   };
-
-  static JavaVM* vm_;
-  static JNIEnv* env_;
-  static jclass threadClass_;
-  static jmethodID currentThread_;
-  static jmethodID isAlive_;
 };
 
-JavaVM* JniThreadAttachmentJvmTest::vm_ = nullptr;
-JNIEnv* JniThreadAttachmentJvmTest::env_ = nullptr;
-jclass JniThreadAttachmentJvmTest::threadClass_ = nullptr;
-jmethodID JniThreadAttachmentJvmTest::currentThread_ = nullptr;
-jmethodID JniThreadAttachmentJvmTest::isAlive_ = nullptr;
-
-TEST_F(JniThreadAttachmentJvmTest, exitedWorkersAreNotAliveInJvm) {
+TEST_F(JniThreadAttachmentJvmTest, workersDetachAfterTheirLastCallback) {
+  JNIEnv* existingEnv = nullptr;
+  ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &existingEnv), JNI_OK);
+  EXPECT_EQ(existingEnv, env_);
   std::vector<jobject> threads(32, nullptr);
+  std::vector<std::thread> workers;
   for (auto& thread : threads) {
-    auto worker = startWorker([&] {
-      JNIEnv* env = nullptr;
-      ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &env), JNI_OK);
-      thread = captureThread(env);
-    });
+    workers.push_back(startWorker([&] {
+      initializeNativeThreadJni(); // Registration is idempotent and does not attach.
+      JNIEnv* cachedEnv = nullptr;
+      ASSERT_EQ(vm_->GetEnv(reinterpret_cast<void**>(&cachedEnv), JNI_VERSION_1_8), JNI_EDETACHED);
+      ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &cachedEnv), JNI_OK);
+      thread = captureThread(cachedEnv);
+      for (int i = 0; i < 4; ++i) {
+        JNIEnv* env = nullptr;
+        ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &env), JNI_OK);
+        EXPECT_EQ(env, cachedEnv);
+        EXPECT_TRUE(env->CallBooleanMethod(thread, isAlive_));
+        auto value = env->NewStringUTF("another callback on the same worker");
+        ASSERT_NE(value, nullptr);
+        env->DeleteLocalRef(value);
+      }
+    }));
+  }
+  for (auto& worker : workers) {
     worker.join();
   }
   for (auto thread : threads) {
     checkExited(thread);
   }
-}
-
-TEST_F(JniThreadAttachmentJvmTest, preserveJavaThreadAndRepeatedCallbacks) {
-  JNIEnv* existingEnv = nullptr;
-  ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &existingEnv), JNI_OK);
-  EXPECT_EQ(existingEnv, env_);
-  jobject thread = nullptr;
-  auto worker = startWorker([&] {
-    JNIEnv* cachedEnv = nullptr;
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &cachedEnv), JNI_OK);
-    thread = captureThread(cachedEnv);
-    for (int i = 0; i < 32; ++i) {
-      JNIEnv* env = nullptr;
-      ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &env), JNI_OK);
-      EXPECT_EQ(env, cachedEnv);
-      EXPECT_TRUE(env->CallBooleanMethod(thread, isAlive_));
-      auto value = cachedEnv->NewStringUTF("another callback on the same worker");
-      ASSERT_NE(value, nullptr);
-      cachedEnv->DeleteLocalRef(value);
-    }
-  });
-  worker.join();
-  checkExited(thread);
   EXPECT_EQ(vm_->GetEnv(reinterpret_cast<void**>(&existingEnv), JNI_VERSION_1_8), JNI_OK);
   EXPECT_EQ(existingEnv, env_);
 }
@@ -346,44 +249,25 @@ TEST_F(JniThreadAttachmentJvmTest, asyncWorkerIsDetachedWhenFutureJoins) {
 }
 
 TEST_F(JniThreadAttachmentJvmTest, pthreadCleanupCanStillUseJni) {
-  Cleanup cleanup{vm_};
-  pthread_key_t key{};
-  bool keyCreated = false;
-  jobject thread = nullptr;
-  auto worker = startWorker([&] {
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &cleanup.cachedEnv), JNI_OK);
-    thread = captureThread(cleanup.cachedEnv);
+  // Install Gluten's key first, even when this case runs in its own process.
+  startWorker([] {}).join();
+  for (bool detach : {false, true}) {
+    SCOPED_TRACE(detach);
+    Cleanup cleanup{vm_};
+    cleanup.detach = detach; // A library may release the attachment before Gluten.
+    pthread_key_t key{};
     ASSERT_EQ(pthread_key_create(&key, [](void* value) { static_cast<Cleanup*>(value)->run(); }), 0);
-    keyCreated = true;
-    ASSERT_EQ(pthread_setspecific(key, &cleanup), 0);
-  });
-  worker.join();
-  EXPECT_TRUE(cleanup.ran);
-  if (keyCreated) {
+    jobject thread = nullptr;
+    auto worker = startWorker([&] {
+      ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &cleanup.cachedEnv), JNI_OK);
+      thread = captureThread(cleanup.cachedEnv);
+      ASSERT_EQ(pthread_setspecific(key, &cleanup), 0);
+    });
+    worker.join();
+    EXPECT_TRUE(cleanup.ran);
     EXPECT_EQ(pthread_key_delete(key), 0);
+    checkExited(thread);
   }
-  checkExited(thread);
-}
-
-TEST_F(JniThreadAttachmentJvmTest, anotherLibraryMayDetachDuringPthreadCleanup) {
-  Cleanup cleanup{vm_};
-  cleanup.detach = true;
-  pthread_key_t key{};
-  bool keyCreated = false;
-  jobject thread = nullptr;
-  auto worker = startWorker([&] {
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &cleanup.cachedEnv), JNI_OK);
-    thread = captureThread(cleanup.cachedEnv);
-    ASSERT_EQ(pthread_key_create(&key, [](void* value) { static_cast<Cleanup*>(value)->run(); }), 0);
-    keyCreated = true;
-    ASSERT_EQ(pthread_setspecific(key, &cleanup), 0);
-  });
-  worker.join();
-  EXPECT_TRUE(cleanup.ran);
-  if (keyCreated) {
-    EXPECT_EQ(pthread_key_delete(key), 0);
-  }
-  checkExited(thread);
 }
 
 TEST_F(JniThreadAttachmentJvmTest, firstAttachmentDuringPthreadCleanupIsReleased) {
