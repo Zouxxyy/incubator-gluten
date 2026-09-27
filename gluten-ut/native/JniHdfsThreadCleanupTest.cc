@@ -26,6 +26,12 @@
 #include <string>
 #include <thread>
 
+#if !defined(__linux__) || !defined(__GLIBC__)
+TEST(JniHdfsThreadCleanupTest, requiresGlibcThreadExitOrdering) {
+  GTEST_SKIP() << "Automatic JNI thread-exit cleanup is only enabled on Linux/glibc";
+}
+#else
+
 namespace gluten {
 namespace {
 
@@ -110,3 +116,5 @@ TEST(JniHdfsThreadCleanup, localFilesCloseBeforeOwnedAttachmentIsReleased) {
 
 } // namespace
 } // namespace gluten
+
+#endif

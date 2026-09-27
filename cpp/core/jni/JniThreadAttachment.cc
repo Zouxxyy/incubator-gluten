@@ -24,6 +24,8 @@
 #include <system_error>
 
 namespace gluten {
+
+#if defined(__linux__) && defined(__GLIBC__)
 namespace {
 
 struct Attachment {
@@ -110,5 +112,19 @@ jint getOrAttachCurrentThreadAsDaemon(JavaVM* vm, JNIEnv** out) {
   }
   return attachStatus;
 }
+
+#else
+
+// Other libcs may reclaim compiler/JVM TLS during the pthread destructor
+// passes (for example, Darwin). Preserve their existing attachment behavior;
+// the glibc cleanup order must not be assumed to be portable.
+void initializeNativeThreadJni() {}
+
+jint getOrAttachCurrentThreadAsDaemon(JavaVM* vm, JNIEnv** out) {
+  const auto status = vm->GetEnv(reinterpret_cast<void**>(out), JNI_VERSION_1_8);
+  return status == JNI_EDETACHED ? vm->AttachCurrentThreadAsDaemon(reinterpret_cast<void**>(out), nullptr) : status;
+}
+
+#endif
 
 } // namespace gluten

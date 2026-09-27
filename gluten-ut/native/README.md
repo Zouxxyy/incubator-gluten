@@ -23,6 +23,12 @@ CMake entry point can also run these tests without building a backend or Spark.
 It builds the production `JniThreadAttachment.cc`, not a test implementation.
 No Paimon native library is needed.
 
+Automatic exit cleanup in this patch is enabled on Linux with glibc, validated
+with HotSpot Java 8 and 17. Other platforms retain the original attach behavior.
+In particular, Darwin may reclaim compiler/JVM thread-local storage during its
+pthread destructor passes, so deferring a JNI call to the final pass must not be
+assumed portable. Lifecycle-specific tests are skipped outside Linux/glibc.
+
 ## Standalone build
 
 Requires a C++20 compiler, CMake, GTest, pthreads, and a JDK with `libjvm`.

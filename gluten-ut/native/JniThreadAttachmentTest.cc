@@ -21,8 +21,15 @@
 #include <limits.h>
 #include <pthread.h>
 #include <atomic>
+#include <future>
 #include <thread>
 #include <vector>
+
+#if !defined(__linux__) || !defined(__GLIBC__)
+TEST(JniThreadAttachmentTest, requiresGlibcThreadExitOrdering) {
+  GTEST_SKIP() << "Automatic JNI thread-exit cleanup is only enabled on Linux/glibc";
+}
+#else
 
 namespace gluten {
 namespace {
@@ -327,6 +334,17 @@ TEST_F(JniThreadAttachmentJvmTest, cppThreadLocalCleanupCanStillUseJni) {
   checkExited(thread);
 }
 
+TEST_F(JniThreadAttachmentJvmTest, asyncWorkerIsDetachedWhenFutureJoins) {
+  jobject thread = nullptr;
+  auto result = std::async(std::launch::async, withJniThreadLifecycle([&] {
+                             JNIEnv* env = nullptr;
+                             ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(vm_, &env), JNI_OK);
+                             thread = captureThread(env);
+                           }));
+  result.get();
+  checkExited(thread);
+}
+
 TEST_F(JniThreadAttachmentJvmTest, pthreadCleanupCanStillUseJni) {
   Cleanup cleanup{vm_};
   pthread_key_t key{};
@@ -441,3 +459,5 @@ TEST_F(JniThreadAttachmentJvmTest, lateDestructorPassCannotLeaveANewAttachmentBe
 
 } // namespace
 } // namespace gluten
+
+#endif

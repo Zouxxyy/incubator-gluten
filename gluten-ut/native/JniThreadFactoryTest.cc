@@ -25,6 +25,12 @@
 #include <functional>
 #include <vector>
 
+#if !defined(__linux__) || !defined(__GLIBC__)
+TEST(JniThreadFactoryTest, requiresGlibcThreadExitOrdering) {
+  GTEST_SKIP() << "Automatic JNI thread-exit cleanup is only enabled on Linux/glibc";
+}
+#else
+
 namespace gluten {
 namespace {
 
@@ -139,3 +145,5 @@ TEST_F(JniThreadFactoryTest, ioPoolWorkersAreDetached) {
 
 } // namespace
 } // namespace gluten
+
+#endif

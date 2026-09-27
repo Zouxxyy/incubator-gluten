@@ -22,11 +22,12 @@
 
 namespace gluten {
 
-// Register at the entry of a Gluten-owned native thread, before running any
+// On Linux/glibc, register at the entry of a Gluten-owned native thread before any
 // user work. Registration does not attach the thread to a JVM. It must not be
 // deferred to the first JNI call, which can occur during pthread cleanup.
 // JNI-dependent cleanup must finish before Gluten's final pthread destructor
 // pass. This is not an ordering guarantee for arbitrarily re-armed TLS keys.
+// On other platforms this is a no-op; attachment behavior remains unchanged.
 void initializeNativeThreadJni();
 
 // Existing attachments are borrowed. Only attachments made by Gluten on a
