@@ -96,23 +96,6 @@ void initializeNativeThreadJni() {
   currentAttachment = attachment.release();
 }
 
-jint getOrAttachCurrentThreadAsDaemon(JavaVM* vm, JNIEnv** out) {
-  const auto status = vm->GetEnv(reinterpret_cast<void**>(out), JNI_VERSION_1_8);
-  if (status != JNI_EDETACHED) {
-    return status;
-  }
-  if (cleanupFinished) {
-    // No destructor pass remains to release a new attachment. Fail rather than
-    // silently leaving a terminated worker registered in the JVM.
-    return JNI_ERR;
-  }
-  const auto attachStatus = vm->AttachCurrentThreadAsDaemon(reinterpret_cast<void**>(out), nullptr);
-  if (attachStatus == JNI_OK && currentAttachment != nullptr) {
-    currentAttachment->ownedVm = vm;
-  }
-  return attachStatus;
-}
-
 #else
 
 // Other libcs may reclaim compiler/JVM TLS during the pthread destructor
@@ -120,11 +103,40 @@ jint getOrAttachCurrentThreadAsDaemon(JavaVM* vm, JNIEnv** out) {
 // the glibc cleanup order must not be assumed to be portable.
 void initializeNativeThreadJni() {}
 
-jint getOrAttachCurrentThreadAsDaemon(JavaVM* vm, JNIEnv** out) {
+#endif
+
+namespace {
+
+jint getOrAttachCurrentThreadImpl(JavaVM* vm, JNIEnv** out, bool daemon) {
   const auto status = vm->GetEnv(reinterpret_cast<void**>(out), JNI_VERSION_1_8);
-  return status == JNI_EDETACHED ? vm->AttachCurrentThreadAsDaemon(reinterpret_cast<void**>(out), nullptr) : status;
+  if (status != JNI_EDETACHED) {
+    return status;
+  }
+#if defined(__linux__) && defined(__GLIBC__)
+  if (cleanupFinished) {
+    // No destructor pass remains to release a new attachment. Fail rather than
+    // silently leaving a terminated worker registered in the JVM.
+    return JNI_ERR;
+  }
+#endif
+  const auto attachStatus = daemon ? vm->AttachCurrentThreadAsDaemon(reinterpret_cast<void**>(out), nullptr)
+                                   : vm->AttachCurrentThread(reinterpret_cast<void**>(out), nullptr);
+#if defined(__linux__) && defined(__GLIBC__)
+  if (attachStatus == JNI_OK && currentAttachment != nullptr) {
+    currentAttachment->ownedVm = vm;
+  }
+#endif
+  return attachStatus;
 }
 
-#endif
+} // namespace
+
+jint getOrAttachCurrentThreadAsDaemon(JavaVM* vm, JNIEnv** out) {
+  return getOrAttachCurrentThreadImpl(vm, out, true);
+}
+
+jint getOrAttachCurrentThread(JavaVM* vm, JNIEnv** out) {
+  return getOrAttachCurrentThreadImpl(vm, out, false);
+}
 
 } // namespace gluten

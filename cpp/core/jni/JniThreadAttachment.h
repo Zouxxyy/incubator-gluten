@@ -35,6 +35,9 @@ void initializeNativeThreadJni();
 // creator remains responsible for its JNI lifecycle.
 jint getOrAttachCurrentThreadAsDaemon(JavaVM* vm, JNIEnv** out);
 
+// The same ownership/cleanup rules, preserving non-daemon attachment semantics.
+jint getOrAttachCurrentThread(JavaVM* vm, JNIEnv** out);
+
 template <typename Function>
 auto withJniThreadLifecycle(Function&& function) {
   return [function = std::forward<Function>(function)]() mutable {

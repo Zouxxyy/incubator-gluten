@@ -56,7 +56,7 @@ class FakeJvm {
       *out = &self.env;
       return JNI_OK;
     };
-    functions.AttachCurrentThreadAsDaemon = [](JavaVM* vm, void** out, void*) -> jint {
+    functions.AttachCurrentThread = [](JavaVM* vm, void** out, void*) -> jint {
       auto& self = from(vm);
       ++self.attachCalls;
       if (self.attachError != JNI_OK) {
@@ -65,6 +65,10 @@ class FakeJvm {
       attached = true;
       *out = &self.env;
       return JNI_OK;
+    };
+    functions.AttachCurrentThreadAsDaemon = [](JavaVM* vm, void** out, void* args) -> jint {
+      ++from(vm).daemonAttachCalls;
+      return vm->AttachCurrentThread(out, args);
     };
     functions.DetachCurrentThread = [](JavaVM* vm) -> jint {
       ++from(vm).detachCalls;
@@ -82,6 +86,7 @@ class FakeJvm {
   JavaVM vm{&functions};
   JNIEnv env{};
   std::atomic<int> attachCalls{0};
+  std::atomic<int> daemonAttachCalls{0};
   std::atomic<int> detachCalls{0};
   jint getEnvError = JNI_OK;
   jint attachError = JNI_OK;
@@ -89,12 +94,15 @@ class FakeJvm {
 
 thread_local bool FakeJvm::attached = false;
 
-TEST(JniThreadAttachment, preserveExistingAttachment) {
+using AttachFunction = jint (*)(JavaVM*, JNIEnv**);
+class JniThreadAttachment : public testing::TestWithParam<AttachFunction> {};
+
+TEST_P(JniThreadAttachment, preserveExistingAttachment) {
   FakeJvm jvm;
   auto worker = startWorker([&] {
     FakeJvm::attached = true;
     JNIEnv* env = nullptr;
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
+    ASSERT_EQ(GetParam()(&jvm.vm, &env), JNI_OK);
     EXPECT_EQ(env, &jvm.env);
   });
   worker.join();
@@ -102,12 +110,12 @@ TEST(JniThreadAttachment, preserveExistingAttachment) {
   EXPECT_EQ(jvm.detachCalls, 0);
 }
 
-TEST(JniThreadAttachment, failedAttachmentHasNoCleanup) {
+TEST_P(JniThreadAttachment, failedAttachmentHasNoCleanup) {
   FakeJvm jvm;
   jvm.attachError = JNI_ERR;
   auto worker = startWorker([&] {
     JNIEnv* env = nullptr;
-    EXPECT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_ERR);
+    EXPECT_EQ(GetParam()(&jvm.vm, &env), JNI_ERR);
     EXPECT_EQ(env, nullptr);
   });
   worker.join();
@@ -115,12 +123,12 @@ TEST(JniThreadAttachment, failedAttachmentHasNoCleanup) {
   EXPECT_EQ(jvm.detachCalls, 0);
 }
 
-TEST(JniThreadAttachment, propagateGetEnvError) {
+TEST_P(JniThreadAttachment, propagateGetEnvError) {
   FakeJvm jvm;
   jvm.getEnvError = JNI_EVERSION;
   auto worker = startWorker([&] {
     JNIEnv* env = nullptr;
-    EXPECT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_EVERSION);
+    EXPECT_EQ(GetParam()(&jvm.vm, &env), JNI_EVERSION);
     EXPECT_EQ(env, nullptr);
   });
   worker.join();
@@ -128,34 +136,41 @@ TEST(JniThreadAttachment, propagateGetEnvError) {
   EXPECT_EQ(jvm.detachCalls, 0);
 }
 
-TEST(JniThreadAttachment, explicitDetachAndReattach) {
+TEST_P(JniThreadAttachment, explicitDetachAndReattach) {
   for (bool reattach : {false, true}) {
     SCOPED_TRACE(reattach);
     FakeJvm jvm;
     auto worker = startWorker([&] {
       JNIEnv* env = nullptr;
-      ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
+      ASSERT_EQ(GetParam()(&jvm.vm, &env), JNI_OK);
       ASSERT_EQ(jvm.vm.DetachCurrentThread(), JNI_OK);
       if (reattach) {
-        ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
+        ASSERT_EQ(GetParam()(&jvm.vm, &env), JNI_OK);
       }
     });
     worker.join();
     EXPECT_EQ(jvm.attachCalls, reattach ? 2 : 1);
     EXPECT_EQ(jvm.detachCalls, jvm.attachCalls.load());
+    EXPECT_EQ(jvm.daemonAttachCalls, GetParam() == &getOrAttachCurrentThreadAsDaemon ? jvm.attachCalls.load() : 0);
   }
 }
 
-TEST(JniThreadAttachment, unmanagedThreadsKeepTheirExistingLifecycle) {
+TEST_P(JniThreadAttachment, unmanagedThreadsKeepTheirExistingLifecycle) {
   FakeJvm jvm;
   std::thread worker([&] {
     JNIEnv* env = nullptr;
-    ASSERT_EQ(getOrAttachCurrentThreadAsDaemon(&jvm.vm, &env), JNI_OK);
+    ASSERT_EQ(GetParam()(&jvm.vm, &env), JNI_OK);
   });
   worker.join();
   EXPECT_EQ(jvm.attachCalls, 1);
   EXPECT_EQ(jvm.detachCalls, 0);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    AttachmentModes,
+    JniThreadAttachment,
+    testing::Values(&getOrAttachCurrentThreadAsDaemon, &getOrAttachCurrentThread),
+    [](const testing::TestParamInfo<AttachFunction>& info) { return info.index == 0 ? "Daemon" : "NonDaemon"; });
 
 class JniThreadAttachmentJvmTest : public JniTest {
  protected:
